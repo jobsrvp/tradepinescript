@@ -1,0 +1,95 @@
+//@version=6
+//this strategy calculates pivot high for 14 period length. Criteria for pivot high candle is there are no other higher candle 14 period before and after this candle. 
+//From this pivot high a slope is calculated using ATR and reduced from pivot high to form a trendline. When the price breaks this trendline on the upside a long position is created. 
+//The exit is done using a trailing stoploss method which uses 20 EMA. The candle which breaks below the 20EMA is taken as the reference candle. If the next candle close below the low of the reference candle then the long position is exited.
+
+strategy("RVP - ATR Breakout with EMA Reference Exit (V4)", overlay=true, default_qty_type=strategy.percent_of_equity, default_qty_value=10)
+
+// === INPUTS ===
+length = input.int(14, "Pivot Lookback Length")
+mult = input.float(1.0, "ATR Slope Multiplier")
+ema9Len = input.int(14, "EMA Length for Exit")
+
+// === INTERNAL CALC ===
+var float upper = na
+var float slope_ph = na
+var int upos = na
+var bool waitForPivot = false
+var bool ready = false
+
+n = bar_index
+src = close
+
+// === PIVOT & SLOPE CALCULATION ===
+ph = ta.pivothigh(length, length)
+slope = ta.atr(length) / length * mult
+
+if not na(ph)
+    waitForPivot := false
+    slope_ph := slope
+    upper := ph
+    ready := true
+else
+    slope_ph := nz(slope_ph[1])
+    upper := nz(upper[1]) - slope_ph
+
+// === BREAKOUT DETECTION ===
+upos := ready ? (not na(ph) ? 0 : (close > (upper - slope_ph * length) ? 1 : nz(upos[1]))) : 0
+long_breakout = (upos > nz(upos[1])) and not waitForPivot and ready
+
+// === STRATEGY ENTRY ===
+if (long_breakout) and (strategy.position_size == 0)
+    strategy.entry(id="Long", direction=strategy.long)
+
+// === EXIT LOGIC: 9 EMA + Reference Low and 2 Candle Countdown ===
+//ema9 = ta.ema(close, ema9Len)
+ema9=ta.ema(close,ema9Len)
+
+var float referenceLow = na
+var bool exitSetup = false
+var int exitCountdown = 0
+
+if (strategy.position_size > 0)
+    if not exitSetup
+        if close < ema9 and close < open
+            referenceLow := low
+            exitSetup := true
+            exitCountdown := 1
+    else
+        exitCountdown -= 1
+        if close < referenceLow and close < open
+            strategy.close(id="Long", comment="ExRLB")
+            exitSetup := false
+            referenceLow := na
+            exitCountdown := 0
+            upos := 0
+            waitForPivot := true
+        else if exitCountdown == 0
+            exitSetup := false
+            referenceLow := na
+else
+    exitSetup := false
+    referenceLow := na
+    exitCountdown := 0
+
+// === PLOTS ===
+plotshape(long_breakout, title="Entry Signal", location=location.belowbar, color=color.rgb(4, 255, 0), style=shape.labelup, text="E", size=size.small)
+plotshape((exitSetup and close < referenceLow), title="Exit Signal", location=location.abovebar, color=color.red, style=shape.labeldown, text="Exit", size=size.small)
+
+plot(ema9, color=color.blue, title="9 EMA")
+
+// === VISUALS: Show reference low and countdown ===
+plot(exitSetup ? referenceLow : na, color=color.rgb(132, 255, 107), style=plot.style_linebr, linewidth=8, title="Ref Low")
+
+var label countdownLabel = na
+
+if (exitSetup)
+    if (na(countdownLabel))
+        countdownLabel := label.new(bar_index, high, text="Exit in " + str.tostring(exitCountdown), color=color.red, style=label.style_label_down, size=size.small)
+    else
+        label.set_xy(countdownLabel, bar_index, high)
+        label.set_text(countdownLabel, "Exit in " + str.tostring(exitCountdown))
+else
+    if (not na(countdownLabel))
+        label.delete(countdownLabel)
+        countdownLabel := na
